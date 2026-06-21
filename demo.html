@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Backend test harness</title>
+<style>
+  /* Deliberately plain. This page only exists to PROVE the backend works.
+     Claude Design will build the real front end later. */
+  body { font-family: system-ui, sans-serif; max-width: 560px; margin: 40px auto; padding: 0 16px; line-height: 1.5; }
+  h1 { font-size: 20px; } h2 { font-size: 15px; margin-top: 28px; }
+  button { padding: 10px 14px; margin: 4px 6px 4px 0; cursor: pointer; border-radius: 8px; border: 1px solid #ccc; background: #f6f6f6; }
+  input { padding: 8px; margin: 3px 0; width: 220px; }
+  .row { margin: 10px 0; }
+  #log { background: #111; color: #6f6; font-family: monospace; font-size: 12px; padding: 12px; border-radius: 8px; height: 220px; overflow:auto; white-space: pre-wrap; margin-top: 20px; }
+  .muted { color: #888; font-size: 13px; }
+</style>
+</head>
+<body>
+  <h1>Life Tracker — backend test harness</h1>
+  <p class="muted">Fill in <code>firebase-config.js</code> first, then open this file through a local server (see README). You must sign in before the three buttons will save anything.</p>
+
+  <h2>1. Account</h2>
+  <div class="row">
+    <input id="email" type="email" placeholder="email" />
+    <input id="password" type="password" placeholder="password (6+ chars)" />
+  </div>
+  <div class="row">
+    <button id="signup">Sign up</button>
+    <button id="signin">Sign in</button>
+    <button id="signout">Sign out</button>
+  </div>
+  <div class="row muted" id="who">Signed out.</div>
+
+  <h2>2. Onboarding — choose your trackers</h2>
+  <div class="row" id="trackerChoices"></div>
+  <div class="row">
+    <button id="btnOnboard">Save my tracker choices</button>
+    <button id="btnShowProfile">Show my profile</button>
+  </div>
+
+  <h2>3. The tracker buttons</h2>
+  <div class="row">
+    <button id="btnMental">＋ Mental health check-in</button>
+    <button id="btnFitness">＋ Log workout</button>
+    <button id="btnSpirit">＋ Reflection</button>
+    <button id="btnFinance">＋ Add transaction</button>
+  </div>
+  <div class="row">
+    <button id="btnList">Show my recent entries</button>
+  </div>
+
+  <div id="log"></div>
+
+  <script type="module">
+    import { auth, profile, TRACKERS, mentalHealth, fitness, spirit, finance } from "./index.js";
+
+    const logEl = document.getElementById("log");
+    const log = (msg) => { logEl.textContent += msg + "\n"; logEl.scrollTop = logEl.scrollHeight; };
+    const err = (e) => log("ERROR: " + (e && e.message ? e.message : e));
+
+    // Reflect login state.
+    auth.onAuthChange((user) => {
+      document.getElementById("who").textContent =
+        user ? `Signed in as ${user.email} (${user.uid})` : "Signed out.";
+      log(user ? "→ signed in" : "→ signed out");
+    });
+
+    const email = () => document.getElementById("email").value.trim();
+    const pass  = () => document.getElementById("password").value;
+
+    document.getElementById("signup").onclick  = () => auth.signUp(email(), pass()).then(() => log("account created")).catch(err);
+    document.getElementById("signin").onclick  = () => auth.signIn(email(), pass()).then(() => log("signed in")).catch(err);
+    document.getElementById("signout").onclick = () => auth.signOutUser().then(() => log("signed out")).catch(err);
+
+    // Onboarding: render the tracker catalog as checkboxes.
+    const choices = document.getElementById("trackerChoices");
+    choices.innerHTML = TRACKERS.map((t) =>
+      `<label style="display:inline-block;margin-right:14px"><input type="checkbox" value="${t.key}" checked /> ${t.icon} ${t.label}</label>`
+    ).join("");
+
+    document.getElementById("btnOnboard").onclick = () => {
+      const keys = [...choices.querySelectorAll("input:checked")].map((c) => c.value);
+      profile.completeOnboarding(keys).then(() => log("onboarding saved: " + keys.join(", "))).catch(err);
+    };
+    document.getElementById("btnShowProfile").onclick = () =>
+      profile.get().then((p) => log("profile: " + JSON.stringify(p))).catch(err);
+
+    // Each button writes one sample entry so you can confirm it lands in Firestore.
+    document.getElementById("btnMental").onclick = () =>
+      mentalHealth.add({ mood: 4, note: "Test check-in", tags: ["calm"], sleepHours: 7 })
+        .then((id) => log("mental health entry saved: " + id)).catch(err);
+
+    document.getElementById("btnFitness").onclick = () =>
+      fitness.add({ activity: "Run", durationMin: 30, intensity: 4, note: "Test workout" })
+        .then((id) => log("fitness entry saved: " + id)).catch(err);
+
+    document.getElementById("btnSpirit").onclick = () =>
+      spirit.add({ practice: "Meditation", minutes: 10, gratitude: "A quiet morning" })
+        .then((id) => log("reflection entry saved: " + id)).catch(err);
+
+    document.getElementById("btnFinance").onclick = () =>
+      finance.add({ amount: 12.5, type: "expense", category: "Food", note: "Test transaction" })
+        .then((id) => log("finance entry saved: " + id)).catch(err);
+
+    document.getElementById("btnList").onclick = async () => {
+      try {
+        const [m, f, sp, fin, bal] = await Promise.all([
+          mentalHealth.list({ max: 5 }),
+          fitness.list({ max: 5 }),
+          spirit.list({ max: 5 }),
+          finance.list({ max: 5 }),
+          finance.balance()
+        ]);
+        log("--- mental health (" + m.length + ") ---");   m.forEach((e) => log(JSON.stringify(e)));
+        log("--- fitness (" + f.length + ") ---");          f.forEach((e) => log(JSON.stringify(e)));
+        log("--- reflection (" + sp.length + ") ---");      sp.forEach((e) => log(JSON.stringify(e)));
+        log("--- finance (" + fin.length + ") balance=" + bal + " ---"); fin.forEach((e) => log(JSON.stringify(e)));
+      } catch (e) { err(e); }
+    };
+
+    log("Ready. Sign up or sign in, then tap a tracker button.");
+  </script>
+</body>
+</html>

@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Finance planner — backend test</title>
+<style>
+  /* Plain on purpose — proves the planner backend works. Claude Design replaces the UI. */
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; line-height: 1.5; }
+  h1 { font-size: 20px; } h2 { font-size: 15px; margin-top: 26px; }
+  button { padding: 10px 14px; margin: 4px 6px 4px 0; cursor: pointer; border-radius: 8px; border: 1px solid #ccc; background: #f6f6f6; }
+  input { padding: 8px; margin: 3px 0; width: 220px; }
+  #log { background: #111; color: #6f6; font-family: monospace; font-size: 12px; padding: 12px; border-radius: 8px; height: 300px; overflow:auto; white-space: pre-wrap; margin-top: 18px; }
+  .muted { color: #888; font-size: 13px; }
+</style>
+</head>
+<body>
+  <h1>Finance planner — backend test</h1>
+  <p class="muted">Sign in (same account as demo.html), then "Seed sample data", then run each calculation. Confirms cashflow, debt, assets/RSU and the FIRE projection all work against Firebase.</p>
+
+  <h2>1. Sign in</h2>
+  <input id="email" type="email" placeholder="email" />
+  <input id="password" type="password" placeholder="password" />
+  <div><button id="signin">Sign in</button> <span class="muted" id="who">signed out</span></div>
+
+  <h2>2. Seed sample data (writes settings, cashflow, debt, assets, RSU vests)</h2>
+  <button id="seed">Seed sample data</button>
+
+  <h2>3. Run calculations</h2>
+  <button id="cf">Cashflow summary (2026-01)</button>
+  <button id="dbt">Debt stats + payoff</button>
+  <button id="ast">Net worth + RSU</button>
+  <button id="proj">FIRE projection</button>
+
+  <div id="log"></div>
+
+  <script type="module">
+    import { auth, financeSettings, cashflow, debt, assets, projection } from "./index.js";
+
+    const logEl = document.getElementById("log");
+    const log = (m) => { logEl.textContent += (typeof m === "string" ? m : JSON.stringify(m, null, 0)) + "\n"; logEl.scrollTop = logEl.scrollHeight; };
+    const err = (e) => log("ERROR: " + (e?.message || e));
+
+    auth.onAuthChange((u) => { document.getElementById("who").textContent = u ? "signed in: " + u.email : "signed out"; });
+    document.getElementById("signin").onclick = () =>
+      auth.signIn(document.getElementById("email").value.trim(), document.getElementById("password").value)
+        .then(() => log("signed in")).catch(err);
+
+    document.getElementById("seed").onclick = async () => {
+      try {
+        await financeSettings.set({
+          currentAge: 27, targetAge: 40, annualReturn: 0.07, inflation: 0.025, swr: 0.04,
+          yearsDebtClearing: 2, cpfRate: 0.15, rsuPriceUsd: 1133.99, usdSgd: 1.2902,
+          annualExpenses: 21521.16, annualSurplus: 78847.9237888, startingAssets: 0
+        });
+        // Cashflow Jan
+        await cashflow.add({ month: "2026-01", kind: "income",  category: "Base salary", amount: 5949 });
+        await cashflow.add({ month: "2026-01", kind: "income",  category: "Overtime",    amount: 853.4 });
+        await cashflow.add({ month: "2026-01", kind: "expense", category: "Housing",     amount: 800 });
+        await cashflow.add({ month: "2026-01", kind: "expense", category: "Food",        amount: 400 });
+        await cashflow.add({ month: "2026-01", kind: "expense", category: "Transport",   amount: 100 });
+        await cashflow.add({ month: "2026-01", kind: "expense", category: "Utilities",   amount: 49.98 });
+        await cashflow.add({ month: "2026-01", kind: "expense", category: "Leisure",     amount: 200 });
+        // Debt
+        await debt.add({ name: "DCP",          balance: 60000, annualRate: 0.045, minPayment: 0 });
+        await debt.add({ name: "Tuition loan", balance: 12500, annualRate: 0.045, minPayment: 0 });
+        // Assets
+        await assets.add({ name: "Cash savings", category: "Cash", value: 200,      liquid: "Yes" });
+        await assets.add({ name: "CPF OA",       category: "CPF",  value: 20025.41, liquid: "No" });
+        await assets.add({ name: "Stocks",       category: "Stocks", value: 3800,   liquid: "Sellable" });
+        // RSU vests
+        for (const [vestDate, shares] of [["2026-07-15",4],["2026-08-01",4],["2026-10-15",15],["2026-11-01",9],["2027-02-01",5],["2027-03-18",7],["2027-05-01",6]])
+          await assets.addVest({ vestDate, shares });
+        log("seeded ✔  (note: re-seeding adds duplicates — clear Firestore to reset)");
+      } catch (e) { err(e); }
+    };
+
+    document.getElementById("cf").onclick = () =>
+      cashflow.summary("2026-01").then((s) =>
+        log(`Cashflow 2026-01 → net=${s.net.toFixed(2)} surplus=${s.surplus.toFixed(2)} savingsRate=${(s.savingsRate*100).toFixed(2)}%`)).catch(err);
+
+    document.getElementById("dbt").onclick = async () => {
+      try {
+        const s = await debt.stats();
+        log(`Debt → total=${s.totalBalance} annualInterest=${s.annualInterest.toFixed(2)} order=[${s.payoffOrder.join(" > ")}]`);
+        const p = await debt.simulate({ extra: 4000 });
+        log(`Avalanche @ +4000/mo → debt-free in ${p.monthsToDebtFree} months, interest paid=${p.totalInterestPaid.toFixed(2)}`);
+      } catch (e) { err(e); }
+    };
+
+    document.getElementById("ast").onclick = async () => {
+      try {
+        const nw = await assets.netWorth();
+        log(`Net worth → total=${nw.total.toFixed(2)} liquid=${nw.liquid.toFixed(2)} locked=${nw.locked.toFixed(2)}`);
+        const rsu = await assets.rsuSummary({ asOf: "2026-06-21" });
+        log(`RSU → shares=${rsu.totalShares} next12=${rsu.next12Shares} monthlyNext12=${rsu.monthlyRsuNext12.toFixed(2)}`);
+      } catch (e) { err(e); }
+    };
+
+    document.getElementById("proj").onclick = () =>
+      projection.run().then((p) =>
+        log(`FIRE → FI number=${p.fiNumber.toFixed(2)}  age reaching FI=${p.ageReachFI}`)).catch(err);
+
+    log("Ready. Sign in → Seed → run the four calculations.");
+  </script>
+</body>
+</html>
